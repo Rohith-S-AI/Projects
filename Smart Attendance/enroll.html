@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Enroll Faces – Smart Attendance</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- face-api.js CDN -->
+  <script defer src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+</head>
+<body>
+<div class="container">
+  <h1>Enroll Faces</h1>
+  <p class="help">Capture 3 clear snapshots per student. Good lighting, face fully visible.</p>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <label>Student Name</label>
+        <input id="name" placeholder="e.g., Rohith S" />
+      </div>
+      <div>
+        <label>Model Status</label>
+        <div id="status" class="box">Loading models…</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Camera</label>
+        <video id="video" autoplay playsinline muted></video>
+        <div class="flex">
+          <button id="startCam">Start Camera</button>
+          <button id="snap" class="ghost">Capture Snapshot</button>
+          <button id="save" class="ok">Save Face (3+ snaps)</button>
+        </div>
+        <div id="note" class="help"></div>
+      </div>
+      <div>
+        <label>Snapshots</label>
+        <div id="snaps" class="split"></div>
+        <div class="help">We recommend 3–5 snapshots at slightly different angles.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Enrolled Students</h2>
+    <table class="table" id="facesTable">
+      <thead><tr><th>Name</th><th>#Descriptors</th><th>Actions</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <p class="help">Next: open <span class="kbd">admin.html</span> to create a session and share its link.</p>
+</div>
+
+<!-- Shared helpers -->
+<?- include common.js in normal hosting; for single-file paste, keep below -?>
+<script src="common.js"></script>
+
+<script>
+// ====== Config: where to load face-api models from ======
+const MODEL_URL = "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights"; 
+// If your network blocks it, download weights to /models and change to "./models"
+
+const video = document.getElementById('video');
+const snapsEl = document.getElementById('snaps');
+const statusEl = document.getElementById('status');
+const noteEl = document.getElementById('note');
+const facesTableBody = document.querySelector('#facesTable tbody');
+let stream = null;
+let descriptors = []; // Float32Array[]
+
+async function loadModels(){
+  statusEl.textContent = "Loading models…";
+  await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+  await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+  await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+  statusEl.textContent = "Models loaded.";
+}
+loadModels().catch(e=>statusEl.textContent = "Model load error: "+e.message);
+
+document.getElementById('startCam').onclick = async () => {
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+    video.srcObject = stream;
+    noteEl.textContent = "Camera active.";
+  }catch(e){
+    noteEl.textContent = "Camera error: " + e.message;
+  }
+};
+
+document.getElementById('snap').onclick = async () => {
+  if(!video.srcObject) return noteEl.textContent = "Start camera first.";
+  const det = await faceapi
+    .detectSingleFace(video, new faceapi.TinyFaceDetectorOptions({inputSize: 320, scoreThreshold: 0.5}))
+    .withFaceLandmarks()
+    .withFaceDescriptor();
+  if(!det){ noteEl.textContent = "No face detected. Try again with better lighting."; return; }
+
+  descriptors.push(Array.from(det.descriptor)); // store array (JSON safe)
+  // Preview
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth; c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video,0,0,c.width,c.height);
+  c.className = "box"; c.style.maxWidth = "220px";
+  snapsEl.appendChild(c);
+  noteEl.textContent = `Captured snapshot #${descriptors.length}`;
+};
+
+document.getElementById('save').onclick = () => {
+  const name = document.getElementById('name').value.trim();
+  if(!name) return alert("Enter student name.");
+  if(descriptors.length < 3) return alert("Capture at least 3 snapshots.");
+
+  const faces = LocalStore.getFaces();
+  faces[name] = (faces[name] || []).concat(descriptors);
+  LocalStore.saveFaces(faces);
+
+  descriptors = [];
+  snapsEl.innerHTML = "";
+  document.getElementById('name').value = "";
+  noteEl.textContent = "Saved!";
+  renderFaces();
+};
+
+function renderFaces(){
+  const faces = LocalStore.getFaces();
+  facesTableBody.innerHTML = "";
+  Object.entries(faces).forEach(([name, descs])=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${name}</td><td>${descs.length}</td>
+      <td class="flex"><button class="bad" data-del="${name}">Delete</button></td>`;
+    facesTableBody.appendChild(tr);
+  });
+  facesTableBody.querySelectorAll('button[data-del]').forEach(btn=>{
+    btn.onclick = () => {
+      const faces = LocalStore.getFaces();
+      delete faces[btn.dataset.del];
+      LocalStore.saveFaces(faces);
+      renderFaces();
+    };
+  });
+}
+renderFaces();
+</script>
+</body>
+</html>
