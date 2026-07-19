@@ -1,0 +1,193 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Teacher Dashboard – Smart Attendance</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="container">
+  <h1>Teacher Dashboard</h1>
+  <div class="flex">
+    <a class="link" href="enroll.html">Enroll Faces</a>
+    <a class="link" href="attend.html">Test Student Page</a>
+  </div>
+
+  <div class="card">
+    <h2>Create Attendance Session</h2>
+    <div class="row">
+      <div>
+        <label>Class / Session Name</label>
+        <input id="className" placeholder="e.g., ECE-301 – Signals & Systems" />
+      </div>
+      <div>
+        <label>Radius (meters)</label>
+        <input id="radius" value="20" disabled />
+        <div class="help">Fixed to 20 m</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Latitude</label>
+        <input id="lat" placeholder="12.971599" />
+      </div>
+      <div>
+        <label>Longitude</label>
+        <input id="lng" placeholder="77.594566" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Expires in (minutes)</label>
+        <input id="mins" type="number" min="1" max="60" value="5" />
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <div class="flex">
+          <button id="useMyLocation" class="ghost">Use my current location</button>
+          <button id="create" class="">Generate Session Link</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="linkBox" class="box" style="display:none;"></div>
+    <div id="locNote" class="help"></div>
+  </div>
+
+  <div class="card">
+    <h2>Active Sessions</h2>
+    <table class="table" id="sessionsTable">
+      <thead>
+      <tr><th>Class</th><th>Token</th><th>Created</th><th>Expires</th><th>Lat,Lng</th><th>Actions</th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Attendance Records</h2>
+    <div class="row">
+      <div>
+        <label>Select Session</label>
+        <select id="sessionPick"></select>
+      </div>
+      <div>
+        <label>&nbsp;</label>
+        <div class="flex">
+          <button id="export" class="ghost">Export CSV</button>
+        </div>
+      </div>
+    </div>
+    <table class="table" id="attTable">
+      <thead><tr><th>#</th><th>Name</th><th>Time</th><th>Lat</th><th>Lng</th><th>Accuracy(m)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Shared helpers -->
+<script src="common.js"></script>
+<script>
+// ====== Admin logic ======
+const linkBox = document.getElementById('linkBox');
+const locNote = document.getElementById('locNote');
+const sessionsTableBody = document.querySelector('#sessionsTable tbody');
+const sessionPick = document.getElementById('sessionPick');
+const attTableBody = document.querySelector('#attTable tbody');
+
+document.getElementById('useMyLocation').onclick = async () => {
+  locNote.textContent = "Getting location…";
+  navigator.geolocation.getCurrentPosition(pos=>{
+    document.getElementById('lat').value = pos.coords.latitude.toFixed(6);
+    document.getElementById('lng').value = pos.coords.longitude.toFixed(6);
+    locNote.textContent = `Location set. Accuracy ~${Math.round(pos.coords.accuracy)} m`;
+  }, err=>{
+    locNote.textContent = "Location error: "+err.message;
+  }, {enableHighAccuracy:true, timeout:8000, maximumAge:0});
+};
+
+document.getElementById('create').onclick = () => {
+  const name = document.getElementById('className').value.trim();
+  const lat = parseFloat(document.getElementById('lat').value);
+  const lng = parseFloat(document.getElementById('lng').value);
+  const mins = parseInt(document.getElementById('mins').value, 10);
+  if(!name) return alert("Enter class/session name");
+  if(Number.isNaN(lat)||Number.isNaN(lng)) return alert("Enter valid latitude/longitude");
+  if(!(mins>=1 && mins<=60)) return alert("Minutes 1–60");
+
+  const token = genToken();
+  const now = Date.now();
+  const session = {
+    token, className: name, lat, lng,
+    radius: RADIUS_METERS,
+    createdAt: now,
+    expiresAt: now + mins*60*1000
+  };
+  LocalStore.upsertSession(token, session);
+
+  const url = `${location.origin}${location.pathname.replace('admin.html','')}attend.html?token=${token}`;
+  linkBox.style.display = 'block';
+  linkBox.innerHTML = `<div>Share this link:</div><div><a class="link">${url}</a></div>`;
+  renderSessions();
+  renderSessionPicker();
+};
+
+function renderSessions(){
+  const sessions = LocalStore.getSessions();
+  sessionsTableBody.innerHTML = "";
+  Object.values(sessions).sort((a,b)=>b.createdAt - a.createdAt).forEach(s=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${s.className}</td>
+      <td><span class="kbd">${s.token}</span></td>
+      <td>${fmt(s.createdAt)}</td>
+      <td>${fmt(s.expiresAt)}</td>
+      <td><span class="kbd">${s.lat.toFixed(6)}, ${s.lng.toFixed(6)}</span></td>
+      <td class="flex">
+        <a class="link" href="attend.html?token=${s.token}" target="_blank">Open</a>
+        <button class="bad" data-del="${s.token}">Delete</button>
+      </td>`;
+    sessionsTableBody.appendChild(tr);
+  });
+  sessionsTableBody.querySelectorAll('button[data-del]').forEach(btn=>{
+    btn.onclick = () => { LocalStore.deleteSession(btn.dataset.del); renderSessions(); renderSessionPicker(); renderAttendance(); };
+  });
+}
+function renderSessionPicker(){
+  const sessions = LocalStore.getSessions();
+  const keys = Object.keys(sessions).sort((a,b)=>sessions[b].createdAt - sessions[a].createdAt);
+  sessionPick.innerHTML = keys.map(k => `<option value="${k}">${sessions[k].className} — ${k}</option>`).join('');
+}
+function renderAttendance(){
+  const token = sessionPick.value;
+  const sessions = LocalStore.getSessions();
+  const s = sessions[token]; if(!s){ attTableBody.innerHTML = ""; return; }
+  const list = LocalStore.getAttendance(token);
+  attTableBody.innerHTML = list.map((r,i)=>`
+    <tr>
+      <td>${i+1}</td><td>${r.name}</td><td>${fmt(r.time)}</td>
+      <td>${r.lat?.toFixed ? r.lat.toFixed(6) : ''}</td>
+      <td>${r.lng?.toFixed ? r.lng.toFixed(6) : ''}</td>
+      <td>${r.accuracy ? Math.round(r.accuracy) : ''}</td>
+    </tr>
+  `).join('');
+}
+sessionPick.onchange = renderAttendance;
+document.getElementById('export').onclick = ()=>{
+  const token = sessionPick.value; if(!token) return;
+  const s = LocalStore.getSession(token); if(!s) return;
+  const list = LocalStore.getAttendance(token);
+  const rows = [
+    ["Class","Token","Name","Time","Latitude","Longitude","Accuracy(m)"],
+    ...list.map(r => [s.className, s.token, r.name, new Date(r.time).toISOString(), r.lat??"", r.lng??"", r.accuracy??""])
+  ];
+  downloadCSV(`${s.className.replace(/[^a-z0-9-_]/ig,'_')}_${s.token}.csv`, rows);
+};
+
+// init
+renderSessions(); renderSessionPicker(); renderAttendance();
+</script>
+</body>
+</html>
